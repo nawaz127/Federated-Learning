@@ -1,0 +1,122 @@
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ============================================================
+# Virtual environments
+# ============================================================
+.venv/
+venv/
+env/
+ENV/
+
+# ============================================================
+# IDE / Editor
+# ============================================================
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================================
+# OS files
+# ============================================================
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# Jupyter
+# ============================================================
+.ipynb_checkpoints/
+
+# ============================================================
+# Datasets (DO NOT version-control raw medical images)
+# ============================================================
+Federated_Dataset/
+dataset_augmented/
+Raw_Data/
+Preprocessed_Data/
+New_Data/
+Data_Raw/
+publication_ready/figures/
+Result-LsetNet-IID-FedAvg/clientresult/
+Result-SwinTiny-IID-FedAvg/clientresult/
+Result-SwinTiny-IID-FedAvg/FLResult/
+
+# ============================================================
+# Model weights & checkpoints
+# ============================================================
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.pkl
+*.joblib
+*.safetensors
+
+# Explicitly ignore large model files in checkpoint folders
+Result-LsetNet-IID-FedAvg
+Result-SwinTiny-IID-FedAvg
+Result-SwinTiny-IID-FedAvg
+
+# ============================================================
+# Training results & logs
+# ============================================================
+Result/
+clientresult/
+FLResult/
+fl_test_logs/
+logs/
+runs/
+*.log
+*.out
+events.out.tfevents.*
+
+# ============================================================
+# Generated outputs (prediction / XAI)
+# ============================================================
+prediction_output/
+xai_out/
+*.npz
+
+# ============================================================
+# Generated publication figures (keep LaTeX/CSV sources)
+# ============================================================
+fig/*.png
+fig/*.jpg
+fig/*.pdf
+publication_ready/figures/
+
+# ============================================================
+# Temporary / cache
+# ============================================================
+*.tmp
+*.temp
+*.cache
+*.bak
+*.pid
+
+# ============================================================
+# Secrets
+# ============================================================
+.env
+.env.*
+*.env
+
+# ============================================================
+# Always track these (override any above patterns)
+# ============================================================
+!requirements.txt
+!README.md
+!LICENSE
+!fig/class_distribution_summary.csv
