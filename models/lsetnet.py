@@ -1,11 +1,14 @@
 
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 import torch
 import torch.nn as nn
 from utils.common_utils import validate_tensor
+from models.residual_se_block import ResidualSEBlock
 
 # Ensure project root is in sys.path for direct execution
 import sys
@@ -104,48 +107,12 @@ class SEBlock(nn.Module):
             nn.Linear(channels // reduction, channels, bias=False),
             nn.Sigmoid()
         )
-        self.se_weights = None # For XAI visualization
 
     def forward(self, x):
         b, c, _, _ = x.size()
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
-        self.se_weights = y # Store the SE attention weights
         return x * y.expand_as(x)
-
-class ResidualSEBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.se = SEBlock(out_channels)
-        self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        self.shortcut = nn.Sequential()
-        if in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-                nn.BatchNorm2d(out_channels)
-            )
-
-    def forward(self, x):
-        shortcut = self.shortcut(x)
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.se(out)
-
-        out = out + shortcut # Add()
-        out = self.relu(out) # Activation after addition as in Keras example (relu after Add)
-        out = self.maxpool(out)
-        return out
 
 class TransformerBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, ff_dim_multiplier=4, dropout=0.1, drop_path_rate=0.1, layer_scale_init_values=1e-5):
@@ -192,145 +159,152 @@ class TransformerBlock(nn.Module):
 
 
 class LSeTNet(nn.Module):
-    def __init__(self, num_classes=3, img_size=224, in_channels=3, embed_dim=512, num_heads=4, ff_dim_multiplier=4, num_transformer_blocks=1, dropout_rate=0.5, freeze_backbone: bool = False, drop_path_rate: float = 0.1, layer_scale_init_values: float = 1e-5):
+    def __init__(self, num_classes=3, img_size=224, in_channels=3, embed_dim=512, num_heads=8, ff_dim_multiplier=4, num_transformer_blocks=2, dropout_rate=0.5, freeze_backbone: bool = False, drop_path_rate: float = 0.2, layer_scale_init_values: float = 1e-5):
         super().__init__()
         self.img_size = img_size
         self.num_classes = num_classes
         self.in_channels = in_channels # Store in_channels
-        self.embed_dim = embed_dim  # Store embed_dim
+        self.embed_dim = embed_dim  # Fixed: Use argument instead of hardcoded 64
+        # Lightweight custom CNN backbone with GroupNorm
+        self.backbone = nn.Sequential(
+            nn.Conv2d(in_channels, 16, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 16),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2)
+        )
+        # Kaiming initialization for all layers
+        import math
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
         self.feature_maps = None  # For XAI visualization hooks
         self._feature_hook_handle = None  # Track hook for cleanup
 
         # Linear projection to match transformer embed dim
-        self.cnn_to_transformer = nn.Linear(512, embed_dim)
+        self.cnn_to_transformer = nn.Linear(128, self.embed_dim)
         # Positional Encoding for Transformer
-        self.pos_embedding = nn.Parameter(torch.randn(1, (self.img_size // 32)**2, embed_dim) * 0.02)
+        # Assuming spatial dimension after backbone and conv_block5 is (img_size // 16)
+        spatial_dim = self.img_size // 16
+        self.pos_embedding = nn.Parameter(torch.empty(1, spatial_dim**2, self.embed_dim))
+        nn.init.trunc_normal_(self.pos_embedding, std=0.02)
 
-        # Initial CNN layer
+        # Initial CNN layer with GroupNorm
         self.conv_block1 = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(128, 32, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 32),
             nn.ReLU(inplace=True),
-            SEBlock(64),
-            nn.MaxPool2d(kernel_size=2, stride=2)
+            nn.Dropout2d(0.2),
+            SEBlock(32)
         )
 
-        # ResidualSEBlocks
+        # ResidualSEBlocks (with DropPath and now GroupNorm internally)
         self.res_blocks = nn.Sequential(
-            ResidualSEBlock(64, 128),
-            ResidualSEBlock(128, 256),
-            ResidualSEBlock(256, 512)
+            ResidualSEBlock(32, 64, drop_path_rate=drop_path_rate),
+            ResidualSEBlock(64, 128, drop_path_rate=drop_path_rate)
         )
 
-        # Final CNN layer before Transformer
+        # Final CNN layer before Transformer with GroupNorm
         self.conv_block5 = nn.Sequential(
-            nn.Conv2d(512, 512, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(512),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 128),
             nn.ReLU(inplace=True),
-            SEBlock(512),
+            nn.Dropout2d(0.2),
+            SEBlock(128),
             nn.MaxPool2d(kernel_size=2, stride=2)
         )
 
         # Spatial Attention (CBAM)
-        self.cbam = CBAM(512)
+        self.cbam = CBAM(128)
 
         # Register hook for XAI on the last CNN layer before transformer
         self._feature_hook_handle = self.cbam.register_forward_hook(self._save_features_hook)
 
-        # Normalization before Transformer
-        self.norm = nn.BatchNorm2d(512)
+        # Normalization before Transformer (GroupNorm)
+        self.norm = nn.GroupNorm(8, 128)
+        self.pre_transformer_norm = nn.LayerNorm(128)
 
         # Transformer Blocks
+        # Linear DropPath decay (Swin-style)
+        if num_transformer_blocks > 1:
+            dpr = torch.linspace(0, drop_path_rate, num_transformer_blocks).tolist()
+        else:
+            dpr = [drop_path_rate]
         self.transformer_blocks = nn.ModuleList([
             TransformerBlock(
-                embed_dim=embed_dim,
+                embed_dim=self.embed_dim,
                 num_heads=num_heads,
                 ff_dim_multiplier=ff_dim_multiplier,
                 dropout=dropout_rate,
-                drop_path_rate=drop_path_rate,
+                drop_path_rate=dpr[i],
                 layer_scale_init_values=layer_scale_init_values
-            ) for _ in range(num_transformer_blocks)
+            ) for i in range(num_transformer_blocks)
         ])
 
 
-        # Classification Head
-        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+        # Classification Head (Using LayerNorm or GroupNorm instead of BatchNorm1d)
+        # Concatenating Avg and Max pool gives 2 * embed_dim channels
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.global_max_pool = nn.AdaptiveMaxPool2d(1)
         self.classifier = nn.Sequential(
-            nn.Linear(embed_dim, 1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-            nn.Linear(1024, num_classes),
+            nn.LayerNorm(2 * self.embed_dim),
+            nn.Linear(2 * self.embed_dim, num_classes)
         )
 
         # Initialize classifier weights for better stability
-        if isinstance(self.classifier[0], nn.Linear):
-            nn.init.xavier_uniform_(self.classifier[0].weight)
-            if self.classifier[0].bias is not None:
-                nn.init.zeros_(self.classifier[0].bias)
-        if isinstance(self.classifier[-1], nn.Linear):
-            if self.classifier[-1].bias is not None:
-                nn.init.zeros_(self.classifier[-1].bias)
+        if isinstance(self.classifier[1], nn.Linear):
+            nn.init.xavier_uniform_(self.classifier[1].weight)
+            if self.classifier[1].bias is not None:
+                nn.init.zeros_(self.classifier[1].bias)
 
         # Freeze backbone if required (must be after all layers are initialized)
         if freeze_backbone:
             self._freeze_backbone()
 
     def _freeze_backbone(self):
-        # Freeze initial conv, residual blocks, final conv, and transformer
-        for param in self.conv_block1.parameters():
-            param.requires_grad = False
-        for param in self.res_blocks.parameters():
-            param.requires_grad = False
-        for param in self.conv_block5.parameters():
-            param.requires_grad = False
-        for param in self.cbam.parameters(): # Freeze CBAM
-            param.requires_grad = False
-        for param in self.norm.parameters(): # Freeze norm
-            param.requires_grad = False
-        for param in self.cnn_to_transformer.parameters(): # Freeze projection
-            param.requires_grad = False
-        self.pos_embedding.requires_grad = False # Freeze positional embedding
-        for block in self.transformer_blocks: # Iterate through transformer blocks
-            for param in block.parameters():
+        # Freeze everything except the classifier
+        for name, param in self.named_parameters():
+            if "classifier" not in name:
                 param.requires_grad = False
         print("LSeTNet backbone frozen.")
 
     def unfreeze_backbone(self):
-        # Unfreeze initial conv, residual blocks, final conv, and transformer
-        for param in self.conv_block1.parameters():
+        # Unfreeze all parameters
+        for param in self.parameters():
             param.requires_grad = True
-        for param in self.res_blocks.parameters():
-            param.requires_grad = True
-        for param in self.conv_block5.parameters():
-            param.requires_grad = True
-        for param in self.cbam.parameters(): # Unfreeze CBAM
-            param.requires_grad = True
-        for param in self.norm.parameters(): # Unfreeze norm
-            param.requires_grad = True
-        for param in self.cnn_to_transformer.parameters(): # Unfreeze projection
-            param.requires_grad = True
-        self.pos_embedding.requires_grad = True # Unfreeze positional embedding
-        for block in self.transformer_blocks: # Iterate through transformer blocks
-            for param in block.parameters():
-                param.requires_grad = True
         print("LSeTNet backbone UN-FROZEN.")
 
     def freeze_bn(self):
+        # Update: Freezing GroupNorm/LayerNorm for consistency (though less critical than BN)
         for m in self.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                m.eval() # Set BatchNorm to evaluation mode
-                m.weight.requires_grad = False
-                m.bias.requires_grad = False
-        print("LSeTNet BatchNorm layers frozen.")
+            if isinstance(m, (nn.GroupNorm, nn.LayerNorm, nn.BatchNorm2d, nn.BatchNorm1d)):
+                m.eval()
+                for param in m.parameters():
+                    param.requires_grad = False
+        print("LSeTNet normalization layers frozen.")
 
     def unfreeze_bn(self):
         for m in self.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                m.train() # Set BatchNorm to training mode
-                m.weight.requires_grad = True
-                m.bias.requires_grad = True
-        print("LSeTNet BatchNorm layers UN-FROZEN.")
+            if isinstance(m, (nn.GroupNorm, nn.LayerNorm, nn.BatchNorm2d, nn.BatchNorm1d)):
+                m.train()
+                for param in m.parameters():
+                    param.requires_grad = True
+        print("LSeTNet normalization layers UN-FROZEN.")
 
     def _save_features_hook(self, module, input, output):
         self.feature_maps = output
@@ -350,44 +324,46 @@ class LSeTNet(nn.Module):
         if x.size(1) == 1 and self.in_channels == 3:
             x = x.repeat(1, 3, 1, 1) # Convert grayscale to RGB
 
-        # Block 1
+        # 1. Custom CNN Backbone
+        x = self.backbone(x)
+
+        # 2. Transition and Residual Blocks
         x = self.conv_block1(x)
-
-        # Blocks 2-4
         x = self.res_blocks(x)
-
-        # Block 5
         x = self.conv_block5(x)
 
-        # Apply CBAM
+        # 3. Spatial Attention
         x = self.cbam(x)
 
-        # Apply Normalization before Transformer
+        # 4. Normalization and Reshape for Transformer
         x = self.norm(x)
-
-        # Transformer
-        # Reshape to (B, H*W, C) for positional embedding
         b, c, h, w = x.size()
         x = x.view(b, c, -1).transpose(1, 2) # (B, H*W, C)
-        x = self.cnn_to_transformer(x) # Project to (B, H*W, ff_dim)
-        x = x + self.pos_embedding[:, :x.size(1), :] # Add positional embedding
+        x = self.pre_transformer_norm(x)
 
+        # 5. Linear Projection and Positional Embedding
+        x = self.cnn_to_transformer(x)
+        x = x + self.pos_embedding[:, :x.size(1), :]
+
+        # 6. Transformer Blocks
         for block in self.transformer_blocks:
             x = block.forward_flat(x) if hasattr(block, 'forward_flat') else self._apply_block_flat(block, x)
 
-        # Classification Head
-        # x is (B, L, ff_dim)
+        # 7. Reshape back to 4D for Global Pooling
         x = x.transpose(1, 2).view(b, self.embed_dim, h, w)
-        x = self.global_avg_pool(x).view(x.size(0), -1) # Flatten after GlobalAveragePooling
+
+        # 8. AdaptiveConcatPool: concat avg and max pool
+        avg_pool = self.global_pool(x)
+        max_pool = self.global_max_pool(x)
+        x = torch.cat([avg_pool, max_pool], dim=1).view(x.size(0), -1)
+
+        # 9. Classifier
         x = self.classifier(x)
         x = validate_tensor(x, "LSeTNet output")
         return x
 
     def _apply_block_flat(self, block, x_flat):
         # Utility to apply block to flat sequence and keep it flat
-        # Pre-LN logic already integrated in TransformerBlock.forward above
-        # But we need to avoid the internal reshape to 4D and back if possible
-        # For now, we will update TransformerBlock to have forward_flat or just handle it here
         b, l, c = x_flat.shape
         h = w = int(l**0.5)
         x_4d = x_flat.transpose(1, 2).view(b, c, h, w)
@@ -403,30 +379,27 @@ class LSeTNet(nn.Module):
         if x.size(1) == 1 and self.in_channels == 3:
             x = x.repeat(1, 3, 1, 1) # Convert grayscale to RGB
 
+        x = self.backbone(x)
         x = self.conv_block1(x)
         x = self.res_blocks(x)
         x = self.conv_block5(x)
-
-        # Apply CBAM
         x = self.cbam(x)
-
-        # Apply Normalization before Transformer
         x = self.norm(x)
 
-        # Transformer
         b, c, h, w = x.size()
-        x = x.view(b, c, -1).transpose(1, 2) # (B, H*W, C)
-        x = self.cnn_to_transformer(x) # Project to (B, H*W, ff_dim)
-        x = x + self.pos_embedding[:, :x.size(1), :] # Add positional embedding
+        x = x.view(b, c, -1).transpose(1, 2)
+        x = self.pre_transformer_norm(x)
+        x = self.cnn_to_transformer(x)
+        x = x + self.pos_embedding[:, :x.size(1), :]
 
         for block in self.transformer_blocks:
             x = block.forward_flat(x) if hasattr(block, 'forward_flat') else self._apply_block_flat(block, x)
 
-        # Features before final dense layers
-        # x is (B, L, C)
-        x = x.transpose(1, 2).view(b, c, h, w)
-        x = self.global_avg_pool(x).view(x.size(0), -1) 
-        return x
+        # Features before final dense layers (using same ConcatPool logic)
+        x = x.transpose(1, 2).view(b, self.embed_dim, h, w)
+        avg_pool = self.global_pool(x)
+        max_pool = self.global_max_pool(x)
+        return torch.cat([avg_pool, max_pool], dim=1).view(x.size(0), -1)
 
     @torch.no_grad()
     def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
@@ -448,12 +421,17 @@ def LSeTNet_model(
     embed_dim: int = 512,
     num_heads: int = 8, # Default of 8 is common for 512 dim
     ff_dim_multiplier: int = 4,
-    num_transformer_blocks: int = 1
+    num_transformer_blocks: int = 2
 ) -> LSeTNet:
     """
     Factory function to create the LSeTNet model.
     pretrained argument is kept for compatibility with model_factory but not used here.
+
+    Note: For RTX 4060 (8GB), 224x224 input is safe. MultiHeadAttention memory is O(N^2) with N tokens. Avoid higher resolutions for stability.
     """
+    # Ablation option: allow 2 or 4 transformer blocks
+    if num_transformer_blocks not in [2, 4]:
+        print(f"Warning: num_transformer_blocks={num_transformer_blocks} is non-standard. Recommended: 2 or 4.")
     return LSeTNet(
         num_classes=num_classes,
         img_size=img_size,
@@ -473,6 +451,7 @@ if __name__ == '__main__':
     # Assume IMG_SIZE and NUM_CLASSES are defined elsewhere or passed
     test_img_size = 224 # Corrected to standard 224
     test_num_classes = 3
+    print("[INFO] For RTX 4060 (8GB), 224x224 input is safe. MultiHeadAttention memory is O(N^2) with N tokens. Avoid higher resolutions for stability.")
 
     # Test with 3 channels (RGB)
     model_rgb = LSeTNet_model(num_classes=test_num_classes, img_size=test_img_size, in_channels=3, num_transformer_blocks=2, num_heads=8)

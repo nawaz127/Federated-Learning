@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
+import torch.nn.utils.prune as prune
 import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.optim as optim
@@ -21,6 +22,25 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from utils.common_utils import check_nan_inf_tensor
+import torchvision.transforms as T
+
+# Data augmentation and normalization transforms
+train_transforms = T.Compose([
+    T.RandomHorizontalFlip(),
+    T.RandomVerticalFlip(),
+    T.RandomRotation(15),
+    T.RandomResizedCrop(224, scale=(0.8, 1.0)),
+    T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+val_transforms = T.Compose([
+    T.Resize(256),
+    T.CenterCrop(224),
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -123,7 +143,7 @@ class ModelMetrics:
 class ModelTrainer:
     """Main Training Engine for the model"""
 
-    def __init__(self, model: nn.Module, device: torch.device, save_dir: str = 'checkpoints', log_dir: str = 'logs'):  # Fixed: was nn.modules
+    def __init__(self, model: nn.Module, device: torch.device, save_dir: str = 'checkpoints', log_dir: str = 'logs'):
         self.model = model
         self.device = device
         self.save_dir = save_dir
@@ -141,6 +161,13 @@ class ModelTrainer:
         if self.scaler:
             logger.info("AMP GradScaler ENABLED (init_scale=1024) — mixed precision training")
         self.current_round = 0
+
+    def prune_model(self, amount=0.2):
+        """Prune weights in all Conv2d and Linear layers."""
+        for name, module in self.model.named_modules():
+            if isinstance(module, (nn.Conv2d, nn.Linear)):
+                prune.l1_unstructured(module, name='weight', amount=amount)
+        print(f"Pruned {amount*100:.0f}% of weights in Conv2d and Linear layers.")
 
     def get_model_weights(self):
         return self.model.state_dict()
@@ -254,6 +281,7 @@ class ModelTrainer:
                 for (name, param), (global_name, global_param) in zip(
                     self.model.named_parameters(), global_model_weights.items()
                 ):
+                    assert name == global_name, f"FedProx param mismatch: {name} != {global_name}"
                     if param.requires_grad:
                         prox_term += ((param - global_param.to(self.device))**2).sum()
                 

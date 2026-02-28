@@ -1,0 +1,116 @@
+<svg width="1400" height="500" viewBox="0 0 1400 500" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1400" height="500" fill="#ffffff" />
+  
+  <!-- Definitions -->
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333" />
+    </marker>
+    <linearGradient id="modelGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#34495e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2c3e50;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="xaiGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#9b59b6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#8e44ad;stop-opacity:1" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3" />
+      <feOffset dx="2" dy="2" result="offsetblur" />
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.3" />
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <text x="700" y="40" font-family="Arial, sans-serif" font-size="24" font-weight="bold" text-anchor="middle" fill="#2c3e50">Integrated Multi-Modal Explainability Pipeline (XAI)</text>
+
+  <!-- STEP 1: INPUT IMAGE -->
+  <g transform="translate(50, 150)">
+    <rect x="0" y="0" width="180" height="150" rx="10" fill="#f8f9fa" stroke="#333" stroke-width="2" />
+    <rect x="15" y="15" width="150" height="120" rx="5" fill="#ecf0f1" stroke="#bdc3c7" />
+    <text x="90" y="85" font-family="Arial, sans-serif" font-size="12" fill="#7f8c8d" text-anchor="middle">Lung CT Slice (PNG)</text>
+    <text x="90" y="180" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333" text-anchor="middle">Input Image</text>
+  </g>
+
+  <line x1="230" y1="225" x2="310" y2="225" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)" />
+
+  <!-- STEP 2: LSeTNet MODEL -->
+  <g transform="translate(320, 150)">
+    <rect x="0" y="0" width="220" height="150" rx="10" fill="url(#modelGrad)" filter="url shadow" />
+    <text x="110" y="30" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="middle">LSeTNet Hybrid Model</text>
+    <rect x="30" y="50" width="160" height="30" rx="5" fill="#3498db" />
+    <text x="110" y="70" font-family="Arial, sans-serif" font-size="12" fill="white" text-anchor="middle">CNN Features</text>
+    <rect x="30" y="90" width="160" height="30" rx="5" fill="#f39c12" />
+    <text x="110" y="110" font-family="Arial, sans-serif" font-size="12" fill="white" text-anchor="middle">Transformer Context</text>
+    
+    <text x="110" y="180" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333" text-anchor="middle">Inference Stage</text>
+  </g>
+
+  <!-- STEP 3: PREDICTION -->
+  <g transform="translate(560, 185)">
+    <rect x="0" y="0" width="160" height="80" rx="10" fill="#e74c3c" opacity="0.1" stroke="#e74c3c" stroke-width="2" />
+    <text x="80" y="30" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#c0392b" text-anchor="middle">Prediction</text>
+    <text x="80" y="55" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#c0392b" text-anchor="middle">Malignant</text>
+  </g>
+
+  <!-- XAI Path Arrows (Parallel) -->
+  <path d="M540,225 C650,225 750,100 850,100" stroke="#8e44ad" stroke-width="2" marker-end="url(#arrowhead)" fill="none" />
+  <path d="M540,225 C650,225 750,185 850,185" stroke="#8e44ad" stroke-width="2" marker-end="url(#arrowhead)" fill="none" />
+  <path d="M540,225 C650,225 750,265 850,265" stroke="#8e44ad" stroke-width="2" marker-end="url(#arrowhead)" fill="none" />
+  <path d="M540,225 C650,225 750,350 850,350" stroke="#8e44ad" stroke-width="2" marker-end="url(#arrowhead)" fill="none" />
+
+  <!-- STEP 4: XAI MODULES -->
+  <g transform="translate(860, 50)">
+    <text x="250" y="-10" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#8e44ad" text-anchor="middle">Explainability Techniques (XAI)</text>
+
+    <!-- Grad-CAM++ -->
+    <rect x="0" y="10" width="500" height="70" rx="10" fill="url(#xaiGrad)" filter="url shadow" />
+    <text x="120" y="35" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="white">Grad-CAM++</text>
+    <text x="120" y="55" font-family="Arial, sans-serif" font-size="11" fill="#ecf0f1">Spatial Localization: Visualizes saliency in the CNN backbone.</text>
+    <rect x="420" y="20" width="50" height="50" rx="5" fill="#e74c3c" opacity="0.3" stroke="white" />
+    <circle cx="445" cy="45" r="10" fill="#e74c3c" />
+
+    <!-- SHAP -->
+    <rect x="0" y="100" width="500" height="70" rx="10" fill="url(#xaiGrad)" filter="url shadow" />
+    <text x="120" y="125" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="white">SHAP (Shapley Values)</text>
+    <text x="120" y="145" font-family="Arial, sans-serif" font-size="11" fill="#ecf0f1">Feature Attribution: Quantifies pixel contributions via game theory.</text>
+    <rect x="420" y="110" width="50" height="50" rx="5" fill="#3498db" opacity="0.3" stroke="white" />
+    <path d="M430,135 L445,120 L460,150" stroke="white" stroke-width="2" fill="none" />
+
+    <!-- LIME -->
+    <rect x="0" y="190" width="500" height="70" rx="10" fill="url(#xaiGrad)" filter="url shadow" />
+    <text x="120" y="215" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="white">LIME (Local Surrogates)</text>
+    <text x="120" y="235" font-family="Arial, sans-serif" font-size="11" fill="#ecf0f1">Surrogate Models: Approximates model behavior locally via superpixels.</text>
+    <rect x="420" y="200" width="50" height="50" rx="5" fill="#2ecc71" opacity="0.3" stroke="white" />
+    <rect x="430" y="210" width="30" height="30" fill="#27ae60" rx="3" />
+
+    <!-- Attention Rollout -->
+    <rect x="0" y="280" width="500" height="70" rx="10" fill="url(#xaiGrad)" filter="url shadow" />
+    <text x="120" y="305" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="white">Transformer Attention Rollout</text>
+    <text x="120" y="325" font-family="Arial, sans-serif" font-size="11" fill="#ecf0f1">Global Context: Propagates attention weights across encoder layers.</text>
+    <rect x="420" y="290" width="50" height="50" rx="5" fill="#f1c40f" opacity="0.3" stroke="white" />
+    <circle cx="445" cy="315" r="15" fill="none" stroke="#f1c40f" stroke-width="2" />
+    <line x1="445" y1="315" x2="455" y2="305" stroke="white" stroke-width="2" />
+
+    <text x="250" y="380" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333" text-anchor="middle">Explainable Artificial Intelligence (XAI)</text>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(50, 420)">
+    <rect x="0" y="0" width="20" height="20" rx="3" fill="url(#modelGrad)" />
+    <text x="25" y="15" font-family="Arial, sans-serif" font-size="12">Inference Engine</text>
+    
+    <rect x="180" y="0" width="20" height="20" rx="3" fill="url(#xaiGrad)" />
+    <text x="205" y="15" font-family="Arial, sans-serif" font-size="12">Explainability Module</text>
+    
+    <rect x="360" y="0" width="20" height="20" rx="3" fill="#e74c3c" opacity="0.2" stroke="#e74c3c" />
+    <text x="385" y="15" font-family="Arial, sans-serif" font-size="12">Diagnostic Decision</text>
+  </g>
+</svg>

@@ -44,6 +44,17 @@ warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger(__name__)
 
+# Add file handler to logger for each client
+def add_client_file_handler(logger, log_dir, client_id):
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"client_{client_id}_training.log")
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    file_handler.setFormatter(formatter)
+    if not any(isinstance(h, logging.FileHandler) and h.baseFilename == file_handler.baseFilename for h in logger.handlers):
+        logger.addHandler(file_handler)
+
 RESULTS_BASE_DIR = os.path.abspath(os.path.join("Result", "clientresult"))
 os.makedirs(RESULTS_BASE_DIR, exist_ok=True)
 
@@ -471,6 +482,8 @@ class MedicalFLClient(fl.client.NumPyClient):
         self.model.to(device)
         self.model = self.model.float()  # Ensure model is always in float32
 
+        add_client_file_handler(logger, self.log_dir, self.client_id)
+
         # Choose a conv layer for Grad-CAM (optional)
         self.target_layer = get_gradcam_target_layer(self.model, model_name)
         if self.target_layer is None:
@@ -643,20 +656,22 @@ class MedicalFLClient(fl.client.NumPyClient):
 
     def _recalibrate_batchnorm(self, loader: DataLoader, num_batches: int = 20) -> None:
         """
-        Recompute BatchNorm running statistics using local data after loading
+        Recompute normalization statistics using local data after loading
         newly aggregated global weights.
-        This improves global evaluation stability and reduces single-class collapse.
+        Supports BatchNorm, GroupNorm, and LayerNorm.
         """
-        bn_layers = [
+        norm_layers = [
             m for m in self.model.modules()
-            if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d))
+            if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.GroupNorm, nn.LayerNorm))
         ]
-        if not bn_layers:
+        if not norm_layers:
             return
 
-        # Keep dropout and most layers in eval behavior, but allow BN stats update.
+        # Keep dropout and most layers in eval behavior, but allow norm layers to update if applicable.
+        # Note: GroupNorm and LayerNorm don't have 'running stats' in the same way BN does,
+        # but setting them to train() ensures we use current batch statistics.
         self.model.eval()
-        for m in bn_layers:
+        for m in norm_layers:
             m.train()
 
         nan_batches = 0
@@ -670,7 +685,7 @@ class MedicalFLClient(fl.client.NumPyClient):
                     if "Numerical instability" in str(e):
                         nan_batches += 1
                         if nan_batches > 5:
-                            logger.warning(f"Client {self.client_id}: Too many NaN batches during BN recalibration, aborting")
+                            logger.warning(f"Client {self.client_id}: Too many NaN batches during norm recalibration, aborting")
                             break
                         continue
                     raise
@@ -679,7 +694,7 @@ class MedicalFLClient(fl.client.NumPyClient):
                     break
 
         self.model.eval()
-        logger.info(f"Client {self.client_id}: BatchNorm recalibrated using {seen} local batches before evaluation"
+        logger.info(f"Client {self.client_id}: Norm layers recalibrated using {seen} local batches"
                     + (f" ({nan_batches} batches had NaN)" if nan_batches else ""))
 
     # Flower NumPyClient API ----
@@ -687,24 +702,20 @@ class MedicalFLClient(fl.client.NumPyClient):
         """
         Return model parameters to the server for aggregation.
         
-        CRITICAL FIX: Transmit float32 to server, compress only for communication tracking.
-        This ensures aggregation correctness and prevents precision loss that degrades
-        convergence and FedProx behavior.
-        
-        FEDBN FIX: Exclude BatchNorm running statistics from aggregation.
-        BatchNorm statistics are local to each client's data distribution and should
-        NOT be aggregated in medical federated learning (heterogeneous data).
+        CRITICAL: Excludes BatchNorm running statistics to match FedBN behavior.
+        GroupNorm and LayerNorm parameters (weight/bias) ARE aggregated as they
+        are not batch-dependent statistics.
         """
-        # Get trainable parameters only (excludes BN running stats)
+        # Get trainable parameters only
         current_parameters = []
         for name, param in self.model.state_dict().items():
             # Exclude BatchNorm running statistics
             if 'running_mean' in name or 'running_var' in name or 'num_batches_tracked' in name:
                 continue
-            # Include all other parameters (weights, biases, BN gamma/beta)
+            # Include all other parameters (weights, biases, GN/LN parameters)
             current_parameters.append(param.detach().cpu().numpy().astype(np.float32))
         
-        # Track communication bytes sent (using actual data size)
+        # Track communication bytes sent
         self.communication_bytes_sent += sum(p.nbytes for p in current_parameters)
 
         return current_parameters
@@ -713,18 +724,10 @@ class MedicalFLClient(fl.client.NumPyClient):
         """
         Set model parameters from server aggregation.
         
-        FEDBN FIX: Only update parameters that were aggregated (excluding BN running stats).
-        Each client maintains its own BatchNorm statistics for local data distribution.
+        CRITICAL: Maintains local BatchNorm statistics (FedBN).
+        Updates all other parameters including GroupNorm/LayerNorm weights.
         """
         incoming_ndarrays = parameters
-
-        # Decompress from float16 to float32 if necessary
-        incoming_ndarrays_decompressed = []
-        for arr in incoming_ndarrays:
-            if arr.dtype == np.float16:
-                incoming_ndarrays_decompressed.append(arr.astype(np.float32))
-            else:
-                incoming_ndarrays_decompressed.append(arr)
 
         # Load parameters back into model, EXCLUDING BN running stats
         params_dict = {}
@@ -733,11 +736,10 @@ class MedicalFLClient(fl.client.NumPyClient):
             # Skip BatchNorm running statistics - they stay client-local
             if 'running_mean' in name or 'running_var' in name or 'num_batches_tracked' in name:
                 params_dict[name] = param  # Keep local BN stats
-                # CRITICAL: Do NOT increment param_idx here - no parameter consumed from incoming array
                 continue
             # Update aggregated parameters
-            if param_idx < len(incoming_ndarrays_decompressed):
-                incoming = incoming_ndarrays_decompressed[param_idx]
+            if param_idx < len(incoming_ndarrays):
+                incoming = incoming_ndarrays[param_idx]
                 if tuple(incoming.shape) != tuple(param.shape):
                     raise RuntimeError(
                         f"Client {self.client_id}: Parameter shape mismatch for '{name}': "
@@ -746,34 +748,19 @@ class MedicalFLClient(fl.client.NumPyClient):
                 params_dict[name] = torch.tensor(incoming, dtype=param.dtype)
                 param_idx += 1
 
-        if param_idx != len(incoming_ndarrays_decompressed):
-            raise RuntimeError(
-                f"Client {self.client_id}: Consumed {param_idx} parameters but received "
-                f"{len(incoming_ndarrays_decompressed)}"
-            )
-        
         self.model.load_state_dict(params_dict, strict=False)
-        # Ensure model is in float32 to match data precision
         self.model = self.model.float()
         
         # Track communication bytes received
-        self.communication_bytes_received += sum(arr.nbytes for arr in incoming_ndarrays_decompressed)
+        self.communication_bytes_received += sum(arr.nbytes for arr in incoming_ndarrays)
 
     def fit(self, parameters: list[np.ndarray], config: dict) -> tuple[list[np.ndarray], int, dict]:
         logger.info(f"Client {self.client_id}: Starting local training round")
 
-        # Proactively clear GPU memory before each round to prevent fragmentation
+        # Proactively clear GPU memory
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
-            import gc; gc.collect()
-
-        # Reset communication counters for the current round
-        self.communication_bytes_sent = 0
-        self.communication_bytes_received = 0
-
-        # Store initial global parameters for parameter cosine similarity
-        initial_global_parameters_flattened = _flatten_parameters(parameters)
 
         self.set_parameters(parameters)
 
@@ -785,53 +772,25 @@ class MedicalFLClient(fl.client.NumPyClient):
         optimizer_name = str(config.get("optimizer", "adamw")).lower()
         scheduler_name = str(config.get("scheduler", "plateau")).lower()
         use_scheduler  = bool(config.get("use_scheduler", True))
-        personalization_layer = bool(config.get("personalization_layer", False))
-        self.fedbn = bool(config.get("fedbn", False)) # Update fedbn status from config
-        global_class_distribution_raw = config.get("global_class_distribution", None)
-        # Deserialize from JSON string (Flower config only supports Scalar types)
-        if isinstance(global_class_distribution_raw, str):
-            import json
-            global_class_distribution = json.loads(global_class_distribution_raw)
-        else:
-            global_class_distribution = global_class_distribution_raw
-
-        if self.fedbn and hasattr(self.model, 'freeze_bn'):
-            self.model.freeze_bn()
-        elif hasattr(self.model, 'unfreeze_bn'):
-            # Ensure BN layers are unfrozen if FedBN is not active for this round
-            self.model.unfreeze_bn()
-
-        # Personalization layer: Freeze backbone if enabled before local training
-        if personalization_layer:
-            logger.info("Client personalization: Freezing backbone layers.")
-            for name, param in self.model.named_parameters():
-                if "classifier" not in name and "head" not in name: # Commonly used names for classification layers
-                    param.requires_grad = False
-
-        # FedProx parameters
+        
+        # FedProx/Aggregation
         aggregation = config.get("aggregation", "fedavg")
         mu = float(config.get("mu", 0.0))
 
-        # Gradient accumulation — auto-set for large models on limited VRAM
-        accumulation_steps = int(config.get("accumulation_steps", 1))
-        if accumulation_steps <= 1:
-            # Auto-detect: use accumulation for transformer models with small batch
-            model_name = getattr(self, 'model_name', '').lower()
-            is_large_model = any(k in model_name for k in ['vit', 'hybrid', 'swin'])
-            if is_large_model and self.batch_size <= 4:
-                accumulation_steps = max(1, 8 // self.batch_size)
-                logger.info(f"Auto gradient accumulation: steps={accumulation_steps}, "
-                           f"effective_batch={self.batch_size * accumulation_steps}")
+        # Handle normalization freezing for FedBN (if applicable)
+        if bool(config.get("fedbn", False)) and hasattr(self.model, 'freeze_bn'):
+            self.model.freeze_bn()
+        elif hasattr(self.model, 'unfreeze_bn'):
+            self.model.unfreeze_bn()
 
         global_params = None
         if aggregation == "fedprox":
-            # Store a copy of the global model's parameters for FedProx
             global_params = {
                 name: param.clone().detach()
                 for name, param in self.model.named_parameters()
             }
 
-        # Loss
+        # Loss and Train
         if loss_function == "focal":
             criterion = FocalLoss(alpha=1.0, gamma=2.0)
         elif loss_function == "label_smoothing":
@@ -839,7 +798,6 @@ class MedicalFLClient(fl.client.NumPyClient):
         else:
             criterion = nn.CrossEntropyLoss(weight=self.class_weights.to(self.device))
 
-        # Train
         train_history = self.trainer.train(
             train_loader=self.train_loader,
             val_loader=self.val_loader,
@@ -848,53 +806,20 @@ class MedicalFLClient(fl.client.NumPyClient):
             weight_decay=weight_decay,
             class_weights=self.class_weights,
             use_scheduler=use_scheduler,
-            patience=10,
             criterion=criterion,
             optimizer_name=optimizer_name,
             scheduler_name=scheduler_name,
             global_model_weights=global_params,
             mu=mu,
-            accumulation_steps=accumulation_steps,
         )
 
-        # Unfreeze all parameters after local training for consistency
-        if personalization_layer:
-            for param in self.model.parameters():
-                param.requires_grad = True
-
         rnd = config.get("server_round", 0)
-
-        # Evaluate on test
-        # test_metrics = self.trainer.evaluate(self.test_loader)
         test_metrics = self.trainer.evaluate(
             self.test_loader,
             save_name=f"round_{rnd}_local_trained_matrix.png"
         )
 
-        # Save per-round metrics and predictions
-        try:
-            round_metrics_path = os.path.join(self.metrics_dir, f"round_{rnd}_metrics.json")
-            serializable_metrics = {
-                k: (float(v) if isinstance(v, (np.floating, float, int, np.integer)) else v)
-                for k, v in test_metrics.items()
-                if not isinstance(v, (np.ndarray, list))
-            }
-            with open(round_metrics_path, "w") as mf:
-                json.dump(serializable_metrics, mf, indent=2)
-
-            round_pred_path = os.path.join(self.pred_dir, f"round_{rnd}_predictions.json")
-            pred_data = {}
-            if "predictions" in test_metrics:
-                pred_data["predictions"] = [int(p) for p in test_metrics["predictions"]]
-            if "labels" in test_metrics:
-                pred_data["labels"] = [int(l) for l in test_metrics["labels"]]
-            if pred_data:
-                with open(round_pred_path, "w") as pf:
-                    json.dump(pred_data, pf, indent=2)
-        except Exception as e:
-            logger.warning(f"Client {self.client_id}: Failed to save per-round metrics/predictions: {e}")
-
-        # XAI probe (optional)
+        # XAI probe
         xai_metrics = self._xai_probe(
             self.val_loader,
             config=config,
@@ -903,121 +828,21 @@ class MedicalFLClient(fl.client.NumPyClient):
             epoch=rnd,
         ) if self.target_layer else self._empty_xai_metrics()
 
-        # Save checkpoint
-        best_model_path = os.path.join(self.ckpt_dir, f"client_{self.client_id}_best_model.pth")
-        torch.save(self.model.state_dict(), best_model_path)
-        logger.info(f"Client {self.client_id}: Best model saved to {best_model_path}")
-
-        # Scalar metrics only (keep payload small)
+        # Metrics preparation
         metrics = {
             "train_loss": float(train_history["train_loss"][-1]),
             "train_accuracy": float(train_history["train_accuracy"][-1]),
-            "train_f1": float(train_history.get("train_f1_macro", [0.0])[-1]),
-            "val_loss": float(train_history["val_loss"][-1]),
             "val_accuracy": float(train_history["val_accuracy"][-1]),
-            "val_f1": float(train_history["val_f1_macro"][-1]),
             "test_accuracy": float(test_metrics["accuracy"]),
             "test_f1": float(test_metrics["f1_macro"]),
             "num_examples": int(len(self.train_loader.dataset)),
-            "grad_norm": float(train_history.get("grad_norm", [0.0])[-1]),
-            "max_activation": float(train_history.get("max_activation", [0.0])[-1]),
         }
-        
-        # Add XAI metrics (ensure all values are native Python types)
-        for key, value in xai_metrics.items():
-            if isinstance(value, (int, float, str, bytes, bool)):
-                metrics[key] = value
-            elif isinstance(value, (np.integer, np.floating)):
-                metrics[key] = float(value)
-            elif isinstance(value, np.ndarray):
-                metrics[key] = value.tolist()
-            else:
-                metrics[key] = str(value)
+        metrics.update({k: v for k, v in xai_metrics.items() if isinstance(v, (int, float, str, bool))})
 
-        # Add personalized metrics if personalization layer is active
-        if personalization_layer:
-            metrics["personalized_test_accuracy"] = float(test_metrics["accuracy"])
-            metrics["personalized_test_f1"] = float(test_metrics["f1_macro"])
-            logger.info(f"Client {self.client_id}: Personalized Test Acc: {metrics['personalized_test_accuracy']:.4f}, F1: {metrics['personalized_test_f1']:.4f}")
-
-        # --- KL Divergence for Data Heterogeneity ---
-        if global_class_distribution is not None:
-            # Calculate local class distribution (use .samples to avoid loading images)
-            local_labels = [s[1] for s in self.train_loader.dataset.samples]
-            local_class_counts = np.bincount(local_labels, minlength=self.num_classes)
-            local_class_probs = local_class_counts / local_class_counts.sum()
-
-            # Ensure global_class_distribution is a numpy array
-            global_class_probs = np.asarray(global_class_distribution, dtype=np.float64)
-
-            # Compute KL divergence
-            kl_div = _kl_divergence(local_class_probs, global_class_probs)
-            metrics["kl_divergence"] = float(kl_div)  # Convert to native Python float
-            logger.info(f"Client {self.client_id}: KL Divergence = {kl_div:.4f}")
-        else:
-            logger.warning(f"Client {self.client_id}: global_class_distribution not provided in config. Skipping KL divergence calculation.")
-        # --- End KL Divergence ---
-
-        # Client drift monitoring
-        if global_params is not None:
-            client_drift = 0.0
-            layer_drift = {}
-            for name, param in self.model.named_parameters():
-                if name in global_params:
-                    # Individual layer drift
-                    ld = float(torch.norm(param - global_params[name]).item())
-                    layer_drift[name] = ld
-                    # Total client drift
-                    client_drift += ld
-            metrics["client_drift"] = float(client_drift)
-            
-            # Don't include layer_drift dict in metrics (too large, causes serialization issues)
-            # metrics["layer_drift"] = layer_drift  # REMOVED
-
-            # Separate CNN and Transformer drift
-            cnn_drift_total = 0.0
-            transformer_drift_total = 0.0
-            for name, ld_value in layer_drift.items():
-                if name.startswith(("cnn.", "densenet.", "backbone.", "features.")):
-                    cnn_drift_total += ld_value
-                elif name.startswith(("vit.", "swin.", "encoder.", "transformer.")):
-                    transformer_drift_total += ld_value
-            metrics["cnn_drift"] = float(cnn_drift_total)
-            metrics["transformer_drift"] = float(transformer_drift_total)
-
-        # Compute outgoing parameters BEFORE reporting metrics
-        # (get_parameters() increments communication_bytes_sent internally)
         outgoing_params = self.get_parameters()
-        
         metrics["communication_bytes_sent"] = int(self.communication_bytes_sent)
         metrics["communication_bytes_received"] = int(self.communication_bytes_received)
 
-        # Parameter Cosine Similarity between current local model and initial global model
-        # FEDBN FIX: Exclude BN stats when computing cosine similarity
-        # Must match what get_parameters() returns (trainable params only)
-        current_local_parameters = []
-        for name, param in self.model.state_dict().items():
-            if 'running_mean' in name or 'running_var' in name or 'num_batches_tracked' in name:
-                continue
-            current_local_parameters.append(param.detach().cpu().numpy())
-        
-        current_local_parameters_flattened = _flatten_parameters(current_local_parameters)
-
-        parameter_cosine_similarity = _cosine_similarity(
-            initial_global_parameters_flattened, current_local_parameters_flattened
-        )
-        metrics["parameter_cosine_similarity"] = float(parameter_cosine_similarity)
-        logger.info(f"Client {self.client_id}: Parameter Cosine Similarity = {parameter_cosine_similarity:.4f}")
-
-        logger.info(f"Client {self.client_id}: Local training completed")
-        
-        # Validate weights before sending
-        for name, param in self.model.named_parameters():
-            if not torch.isfinite(param).all():
-                logger.critical(f"Client {self.client_id}: Parameter {name} contains NaN/Inf before sending to server.")
-                raise RuntimeError(f"Numerical instability in {name}")
-
-        # CRITICAL: Synchronize CUDA and clear cache to prevent GPU lock between rounds
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
@@ -1027,23 +852,19 @@ class MedicalFLClient(fl.client.NumPyClient):
     def evaluate(self, parameters: list[np.ndarray], config: dict) -> tuple[float, int, dict]:
         logger.info(f"Client {self.client_id}: Starting evaluation")
         
-        # Clear GPU cache before evaluation
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
         
         self.set_parameters(parameters)
 
-        # Stabilize global-model evaluation by aligning BN running stats to local data.
-        # This mitigates one-class collapse right after parameter aggregation.
+        # Recalibrate normalization layers for stability
         try:
             self._recalibrate_batchnorm(self.train_loader, num_batches=20)
         except Exception as e:
-            logger.warning(f"Client {self.client_id}: BN recalibration skipped due to: {type(e).__name__}: {e}")
+            logger.warning(f"Client {self.client_id}: Norm recalibration skipped: {e}")
 
         rnd = config.get("server_round", 0)
-
-        #test_metrics = self.trainer.evaluate(self.test_loader)
         test_metrics = self.trainer.evaluate(
             self.test_loader,
             save_name=f"round_{rnd}_global_weights_matrix.png"
@@ -1056,32 +877,18 @@ class MedicalFLClient(fl.client.NumPyClient):
             save_k=0,
             epoch=rnd,
         ) if self.target_layer else self._empty_xai_metrics()
+        
         test_metrics.update(add_xai)
-        test_metrics["communication_bytes_sent"] = self.communication_bytes_sent
-        test_metrics["communication_bytes_received"] = self.communication_bytes_received
+        
+        # Filter for Flower serialization
+        flower_metrics = {}
+        for k, v in test_metrics.items():
+            if isinstance(v, (int, float, np.integer, np.floating, str, bool)):
+                flower_metrics[k] = v
 
-        logger.info(f"Client {self.client_id}: Evaluation completed")
-        logger.info(f"  - Test Accuracy: {test_metrics['accuracy']:.4f}")
-        logger.info(f"  - Test F1 (Macro): {test_metrics['f1_macro']:.4f}")
-        logger.info(f"  - XAI Del-AUC Mean: {test_metrics['xai_del_auc_mean']:.4f}")
-
-        # ── GPU cleanup after evaluation ──
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
-
-        # Filter metrics for Flower: only scalars and strings (no lists/arrays)
-        flower_metrics = {}
-        for k, v in test_metrics.items():
-            if isinstance(v, (np.integer, np.floating)):
-                flower_metrics[k] = float(v)
-            elif isinstance(v, (int, float)):
-                flower_metrics[k] = float(v)
-            elif isinstance(v, str):
-                flower_metrics[k] = v
-            elif isinstance(v, bytes):
-                flower_metrics[k] = v
-            # Skip lists, arrays, dicts — Flower ConfigRecord can't serialize them
 
         return (
             float(test_metrics.get("loss", 0.0)),

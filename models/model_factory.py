@@ -45,7 +45,7 @@ def get_model(
             freeze_backbone=freeze_backbone,
             drop_path_rate=0.2,  # more regularization
             layer_scale_init_values=1e-4,  # stronger layer scaling
-            num_transformer_blocks=lsetnet_num_transformer_blocks if lsetnet_num_transformer_blocks is not None else 3,
+            num_transformer_blocks=lsetnet_num_transformer_blocks if lsetnet_num_transformer_blocks is not None else 2,
             num_heads=lsetnet_num_heads if lsetnet_num_heads is not None else 8,
             ff_dim_multiplier=lsetnet_ff_dim_multiplier if lsetnet_ff_dim_multiplier is not None else 4, # Pass new parameter
         )

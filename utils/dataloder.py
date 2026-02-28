@@ -157,8 +157,7 @@ class CTScanDataset(Dataset):
 
     def _apply_medical_preprocessing(self, image: np.ndarray) -> np.ndarray:
         """Apply medical-specific preprocessing to CT scans"""
-        # Resize to standard size
-        image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_CUBIC)
+        # Removed redundant Resize; Albumentations handles resizing
 
         # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))

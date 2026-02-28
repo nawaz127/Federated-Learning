@@ -1,3 +1,80 @@
+def evaluate_calibration_metrics(self):
+    """
+    Compute ECE, Brier score, and calibration curve for global test set.
+    """
+    from utils.calibration_metrics import compute_ece, compute_brier_score, compute_calibration_curve
+    if self.global_test_loader is None:
+        logger.warning("No global test loader available for calibration evaluation.")
+        return
+    logger.info("Evaluating calibration metrics on global test set...")
+    y_true, y_pred = [], []
+    model = self.global_model_instance
+    model.eval()
+    for batch in self.global_test_loader:
+        images, labels = batch[0].to(self.global_model_device), batch[1].to(self.global_model_device)
+        with torch.no_grad():
+            logits = model(images)
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
+            y_true.extend(labels.cpu().numpy())
+            y_pred.extend(probs)
+    ece = compute_ece(y_true, y_pred)
+    logger.info(f"Global ECE: {ece:.4f}")
+    # For Brier score and calibration curve, use binary (class 1) probabilities
+    y_pred_bin = np.array(y_pred)[:, 1] if np.array(y_pred).shape[1] > 1 else np.array(y_pred)[:, 0]
+    brier = compute_brier_score(np.array(y_true) == 1, y_pred_bin)
+    logger.info(f"Global Brier score: {brier:.4f}")
+    prob_true, prob_pred = compute_calibration_curve(np.array(y_true) == 1, y_pred_bin)
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.plot(prob_pred, prob_true, marker='o', label='Calibration curve')
+    plt.plot([0, 1], [0, 1], linestyle='--', label='Perfectly calibrated')
+    plt.xlabel('Mean predicted probability')
+    plt.ylabel('Fraction of positives')
+    plt.title('Global Calibration Curve')
+    plt.legend()
+    plt.savefig(os.path.join(self.results_base_dir, "global_calibration_curve.png"))
+    plt.close()
+def log_parameter_counts(self):
+    """
+    Log total trainable parameter counts for all models used, for publication table.
+    """
+    from models.model_factory import count_parameters
+    model = self.global_model_instance
+    param_count = count_parameters(model)
+    logger.info(f"Total trainable parameters for {self.model_name}: {param_count:,}")
+    with open(os.path.join(self.results_base_dir, "parameter_counts.txt"), "w") as f:
+        f.write(f"{self.model_name}: {param_count}\n")
+    def run_global_xai_evaluation(self):
+        """
+        Run GradCAM++ on the global test set using the best global model, compute deletion AUC, and generate publication figures.
+        """
+        if self.global_test_loader is None:
+            logger.warning("No global test loader available for XAI evaluation.")
+            return
+        logger.info("Running server-side global XAI evaluation (GradCAM++ and deletion AUC)...")
+        from utils.xai.gradcam_pp import GradCAMPlusPlus
+        from utils.xai.xai_metrics import compute_deletion_auc
+        import torch
+        model = self.global_model_instance
+        model.eval()
+        cam_method = GradCAMPlusPlus(model)
+        all_aucs = []
+        for batch in self.global_test_loader:
+            images, labels = batch[0].to(self.global_model_device), batch[1].to(self.global_model_device)
+            cams = cam_method.generate(images, labels)
+            aucs = compute_deletion_auc(model, images, labels, cams)
+            all_aucs.extend(aucs)
+        mean_auc = float(np.mean(all_aucs)) if all_aucs else 0.0
+        logger.info(f"Global GradCAM++ deletion AUC: {mean_auc:.4f}")
+        # Optionally save figure
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.hist(all_aucs, bins=20)
+        plt.title("Global GradCAM++ Deletion AUC Distribution")
+        plt.xlabel("Deletion AUC")
+        plt.ylabel("Frequency")
+        plt.savefig(os.path.join(self.results_base_dir, "global_gradcam_deletion_auc_hist.png"))
+        plt.close()
 import argparse
 import hashlib
 import json
@@ -31,7 +108,17 @@ warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")
 RESULTS_BASE_DIR = os.path.abspath("Result/FLResult")
 os.makedirs(RESULTS_BASE_DIR, exist_ok=True)
 
+
+# Add file handler to logger
 logger = logging.getLogger("FL-Server")
+log_dir = os.path.join(RESULTS_BASE_DIR, "server_logs")
+os.makedirs(log_dir, exist_ok=True)
+file_handler = logging.FileHandler(os.path.join(log_dir, "server_training.log"), mode="a", encoding="utf-8")
+file_handler.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+file_handler.setFormatter(formatter)
+if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+    logger.addHandler(file_handler)
 
 
 def _sanitize_for_json(obj):
@@ -266,6 +353,10 @@ class MedicalFLStrategy(fl.server.strategy.FedAvg):
         self.lsetnet_num_heads = lsetnet_num_heads
         self.lsetnet_ff_dim_multiplier = lsetnet_ff_dim_multiplier
 
+
+        # Always initialize xai_shared_probe_dir to avoid AttributeError
+        self.xai_shared_probe_dir = None
+
         logger.info(
             f"   → aggregation={self.aggregation}, mu={self.mu}, "
             f"lr={self.learning_rate}, wd={self.weight_decay}"
@@ -341,6 +432,27 @@ class MedicalFLStrategy(fl.server.strategy.FedAvg):
                                                 os.path.join(self.results_base_dir, "server_checkpoints"),
                                                 os.path.join(self.results_base_dir, "server_logs"))
         self.global_model_metrics_calculator = ModelMetrics(num_classes=self.num_classes)
+        self.global_macro_auc_history = []
+    def evaluate_global_macro_auc(self):
+        """
+        Compute macro AUC on the global test set and log it for publication.
+        """
+        if self.global_test_loader is None:
+            logger.warning("No global test loader available for macro AUC evaluation.")
+            return
+        logger.info("Evaluating macro AUC on global test set...")
+        y_true, y_pred = [], []
+        model = self.global_model_instance
+        model.eval()
+        for batch in self.global_test_loader:
+            images, labels = batch[0].to(self.global_model_device), batch[1].to(self.global_model_device)
+            with torch.no_grad():
+                logits = model(images)
+                y_true.extend(labels.cpu().numpy())
+                y_pred.extend(logits.cpu().numpy())
+        macro_auc = self.global_model_metrics_calculator.compute_macro_auc(np.array(y_true), np.array(y_pred))
+        self.global_macro_auc_history.append(macro_auc)
+        logger.info(f"Global macro AUC: {macro_auc:.4f}")
 
 
         if global_val_data_dir:
@@ -372,14 +484,25 @@ class MedicalFLStrategy(fl.server.strategy.FedAvg):
             self.global_test_loader = DataLoader(
                 global_test_dataset, batch_size=32, shuffle=False, num_workers=0
             )
-            logger.info(f"   → Global final test dataset loaded from {global_final_test_data_dir} "
-                        f"with {len(self.global_test_loader.dataset)} samples.")
+            logger.info(
+                f"   → Global final test dataset loaded from {global_final_test_data_dir} "
+                f"with {len(self.global_test_loader.dataset)} samples."
+            )
+            self.xai_shared_probe_dir = None
         else:
             logger.warning("No global final test data directory provided. Final server-side testing will be skipped.")
 
         logger.info("FL Strategy initialized")
         logger.info(f"   → results_base_dir: {self.results_base_dir}")
         logger.info(f"   → model={self.model_name}, num_classes={self.num_classes}")
+
+    def finalize(self):
+        """
+        Called after final round to trigger server-side XAI evaluation and macro AUC logging.
+        """
+        self.run_global_xai_evaluation()
+        self.evaluate_global_macro_auc()
+        self.log_parameter_counts()
     def _save_strategy_config(self):
         config = {
             "strategy": "MedicalFLStrategy",
@@ -408,9 +531,10 @@ class MedicalFLStrategy(fl.server.strategy.FedAvg):
         if self.model_name in cnn_models:
             base_lr = float(self.learning_rate)
         elif self.model_name in hybrid_models:
-            base_lr = float(self.learning_rate) * 0.5  # Slightly lower for hybrids
+            # Hybrids like LSeTNet benefit from slightly lower LR than pure CNNs for stability
+            base_lr = float(self.learning_rate) * 0.7  
         elif self.model_name in transformer_models:
-            base_lr = float(self.learning_rate) * 0.1  # Lower for transformers
+            base_lr = float(self.learning_rate) * 0.1  # Much lower for transformers
 
         config = {
             "server_round": server_round,
@@ -425,7 +549,7 @@ class MedicalFLStrategy(fl.server.strategy.FedAvg):
             "xai_probe": True,
             "xai_samples": 3,  # 1 sample per class for XAI (3 classes)
             "xai_save_k": 0,
-            "xai_shared_probe_dir": r"C:/Users/shahn/source/repos/Federated-Learning/Federated_Dataset/val",
+            "xai_shared_probe_dir": self.xai_shared_probe_dir,
             "xai_cam_downsample": 32,
             "xai_run_shap": False,   # SHAP disabled
             "xai_run_lime": True,
@@ -447,34 +571,31 @@ class MedicalFLStrategy(fl.server.strategy.FedAvg):
             config["xai_run_heavy"] = False
 
         # Dynamic scheduler based on model name
-        transformer_models = ["vit", "swin_tiny", "hybridmodel", "hybridswin", "LSeTNet"] # List of models considered "Transformer" (includes hybrids with transformer blocks)
-        if self.model_name in transformer_models:
+        transformer_based = ["vit", "swin_tiny", "hybridmodel", "hybridswin", "LSeTNet"]
+        if self.model_name in transformer_based:
             config["scheduler"] = "warmup_cosine"
-            # Adjust local_epochs or T_max for CosineAnnealingLR if necessary, e.g.,
-            # if T_max in client is 50, then local_epochs should be >= 50 for full annealing.
-            # For now, keep local_epochs as provided by server, assuming T_max on client is default 50.
-            if config["local_epochs"] < 50:
+            if config["local_epochs"] < 5: # Hybrid/Transformer models need enough local steps
                  logger.warning(f"Model '{self.model_name}' detected. Using 'warmup_cosine' scheduler. "
-                                f"Consider increasing 'local_epochs' (current: {config['local_epochs']}) "
-                                f"to at least 50 for full CosineAnnealingLR effect.")
+                                f"Current 'local_epochs' is {config['local_epochs']}. "
+                                f"Consider using at least 5 epochs for hybrid models.")
 
 
-        if server_round > 20:
+        if server_round >= 5:
             config["loss_function"] = "focal"
         if 32 <= server_round <= 60:
-            config["learning_rate"] = base_lr * 0.5  # Decay relative to model-specific base LR
-            config["local_epochs"] = 4
+            config["learning_rate"] = base_lr * 0.5
+            config["local_epochs"] = max(2, local_epochs - 1)
         elif 61 <= server_round <= 80:
             config["learning_rate"] = base_lr * 0.2
-            config["local_epochs"] = 3
+            config["local_epochs"] = max(1, local_epochs - 2)
         elif server_round > 80:
             config["learning_rate"] = base_lr * 0.1
-            config["local_epochs"] = 2
+            config["local_epochs"] = 1
 
         logger.info(
             f"Round {server_round} training config: "
             f"epochs={config['local_epochs']}, lr={config['learning_rate']}, "
-            f"loss={config['loss_function']}, scheduler={config['scheduler']}" # Log new scheduler
+            f"loss={config['loss_function']}, scheduler={config['scheduler']}"
         )
         return config
 
@@ -1420,6 +1541,7 @@ class LoggingClientManager(SimpleClientManager):
     def __init__(self, expected_clients: int):
         super().__init__()
         self.expected_clients = expected_clients
+        self.xai_shared_probe_dir = None
 
     def register(self, client: ClientProxy) -> bool:
         ok = super().register(client)
@@ -1527,8 +1649,8 @@ def main():
     parser.add_argument("--model", type=str, default="resnet50",
                         choices=["resnet50", "hybridmodel", "mobilenetv3", "hybridswin", "densenet121", "LSeTNet", "swin_tiny", "vit", "vit_tiny"])
     parser.add_argument("--num-classes", type=int, default=3)
-    parser.add_argument("--lsetnet-num-transformer-blocks", type=int, default=4,
-                        help="Number of TransformerBlocks for LSeTNet model")
+    parser.add_argument("--lsetnet-num-transformer-blocks", type=int, default=2,
+                        help="Number of TransformerBlocks for LSeTNet model (Optimized for hybrid efficiency)")
     parser.add_argument("--lsetnet-num-heads", type=int, default=8,
                         help="Number of attention heads for LSeTNet model")
     parser.add_argument("--lsetnet-ff-dim-multiplier", type=int, default=4,

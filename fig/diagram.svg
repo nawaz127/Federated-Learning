@@ -1,0 +1,137 @@
+<svg width="1000" height="1350" viewBox="0 0 1000 1350" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1000" height="1350" fill="#ffffff" />
+  
+  <defs>
+    <style type="text/css">
+      .text-main { font-family: "Times New Roman", serif; fill: #333; }
+      .header { font-size: 28px; font-weight: bold; fill: #2c3e50; }
+      .subheader { font-size: 18px; font-weight: bold; fill: #34495e; }
+      .box-ready { fill: #f1fcf4; stroke: #27ae60; stroke-width: 2; }
+      .box-partial { fill: #fef9e7; stroke: #f39c12; stroke-width: 2; }
+      .box-missing { fill: #fdf2f2; stroke: #e74c3c; stroke-width: 2; }
+      .tag-ready { fill: #27ae60; font-weight: bold; font-size: 14px; }
+      .tag-partial { fill: #f39c12; font-weight: bold; font-size: 14px; }
+      .tag-missing { fill: #e74c3c; font-weight: bold; font-size: 14px; }
+      .bullet { font-size: 14px; fill: #555; }
+      .desc { font-size: 12px; font-style: italic; fill: #7f8c8d; }
+    </style>
+    
+    <!-- Status Icons -->
+    <symbol id="check" viewBox="0 0 24 24">
+      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#27ae60"/>
+    </symbol>
+    <symbol id="warn" viewBox="0 0 24 24">
+      <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" fill="#f39c12"/>
+    </symbol>
+    <symbol id="cross" viewBox="0 0 24 24">
+      <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="#e74c3c"/>
+    </symbol>
+  </defs>
+
+  <!-- Title -->
+  <text x="500" y="60" text-anchor="middle" class="text-main header">Q1 Journal Publication Readiness Audit</text>
+  <text x="500" y="90" text-anchor="middle" class="text-main subheader">Framework Capability vs. Nature/Lancet Standards</text>
+
+  <!-- Readiness Meter -->
+  <g transform="translate(250, 130)">
+    <rect x="0" y="0" width="500" height="40" rx="20" fill="#eee" />
+    <rect x="0" y="0" width="400" height="40" rx="20" fill="url(#grad-progress)" />
+    <linearGradient id="grad-progress" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#f39c12;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#27ae60;stop-opacity:1" />
+    </linearGradient>
+    <text x="250" y="26" text-anchor="middle" font-family="Arial" font-weight="bold" fill="white">CURRENT READINESS: 80%</text>
+  </g>
+
+  <!-- Pillar 1: Federated Core -->
+  <g transform="translate(50, 220)">
+    <rect x="0" y="0" width="430" height="280" rx="10" class="box-ready" />
+    <use xlink:href="#check" x="15" y="15" width="24" height="24" />
+    <text x="50" y="35" class="text-main subheader tag-ready">1. Federated Convergence Core</text>
+    <text x="20" y="70" class="text-main bullet">• Automated Loss/Accuracy/F1 Curves</text>
+    <text x="20" y="95" class="text-main bullet">• Client Weight Drift ($L_2$ Distance)</text>
+    <text x="20" y="120" class="text-main bullet">• Gradient Norm &amp; Numerical Stability</text>
+    <text x="20" y="145" class="text-main bullet">• Weight Norm &amp; Activation Magnitude</text>
+    <text x="20" y="170" class="text-main bullet">• Communication Cost (Bytes Sent/Recv)</text>
+    <line x1="20" y1="190" x2="410" y2="190" stroke="#27ae60" stroke-width="1" stroke-dasharray="4,2" />
+    <text x="20" y="215" class="text-main desc">Verdict: Technically complete. Ready for high-impact</text>
+    <text x="20" y="235" class="text-main desc">convergence analysis figures.</text>
+  </g>
+
+  <!-- Pillar 2: Performance & Metrics -->
+  <g transform="translate(520, 220)">
+    <rect x="0" y="0" width="430" height="280" rx="10" class="box-ready" />
+    <use xlink:href="#check" x="15" y="15" width="24" height="24" />
+    <text x="50" y="35" class="text-main subheader tag-ready">2. Diagnostic Performance</text>
+    <text x="20" y="70" class="text-main bullet">• Per-class Precision / Recall / Sensitivity</text>
+    <text x="20" y="95" class="text-main bullet">• Specificity &amp; Balanced Accuracy</text>
+    <text x="20" y="120" class="text-main bullet">• Macro &amp; Weighted F1-Scores</text>
+    <text x="20" y="145" class="text-main bullet">• Global AUC-ROC Calculation</text>
+    <text x="20" y="170" class="text-main bullet">• Confusion Matrix JSON/Image Generation</text>
+    <line x1="20" y1="190" x2="410" y2="190" stroke="#27ae60" stroke-width="1" stroke-dasharray="4,2" />
+    <text x="20" y="215" class="text-main desc">Verdict: Matches SOTA medical AI reporting.</text>
+    <text x="20" y="235" class="text-main desc">Internal validation metrics are robust.</text>
+  </g>
+
+  <!-- Pillar 3: XAI & Interpretability -->
+  <g transform="translate(50, 530)">
+    <rect x="0" y="0" width="430" height="280" rx="10" class="box-partial" />
+    <use xlink:href="#warn" x="15" y="15" width="24" height="24" />
+    <text x="50" y="35" class="text-main subheader tag-partial">3. Explainability (XAI)</text>
+    <text x="20" y="70" class="text-main bullet">• Grad-CAM++ &amp; LIME Baselines</text>
+    <text x="20" y="95" class="text-main bullet">• Qualitative Heatmap Visualization</text>
+    <text x="20" y="120" class="text-main bullet">• Quantitative Faithfulness (Del/Ins AUC)</text>
+    <text x="20" y="145" class="text-main bullet">• Cross-Client Localization SSIM</text>
+    <text x="20" y="170" class="text-main bullet" fill="#e67e22" style="font-weight:bold">• Missing: Final Server-side Global XAI</text>
+    <line x1="20" y1="190" x2="410" y2="190" stroke="#f39c12" stroke-width="1" stroke-dasharray="4,2" />
+    <text x="20" y="215" class="text-main desc">Next Step: Run final explainability probe on the</text>
+    <text x="20" y="235" class="text-main desc">best global model using global test set.</text>
+  </g>
+
+  <!-- Pillar 4: Statistical Rigor -->
+  <g transform="translate(520, 530)">
+    <rect x="0" y="0" width="430" height="280" rx="10" class="box-partial" />
+    <use xlink:href="#warn" x="15" y="15" width="24" height="24" />
+    <text x="50" y="35" class="text-main subheader tag-partial">4. Experimental Rigor</text>
+    <text x="20" y="70" class="text-main bullet">• Baseline Comparison (CNN vs Trans)</text>
+    <text x="20" y="95" class="text-main bullet">• Multi-round Logging Support</text>
+    <text x="20" y="120" class="text-main bullet" fill="#e67e22">• Missing: 3-Run Mean ± Std reporting</text>
+    <text x="20" y="145" class="text-main bullet" fill="#e67e22">• Missing: Paired t-test Significance</text>
+    <text x="20" y="170" class="text-main bullet" fill="#e67e22">• Missing: Dirichlet Distribution Visuals</text>
+    <line x1="20" y1="190" x2="410" y2="190" stroke="#f39c12" stroke-width="1" stroke-dasharray="4,2" />
+    <text x="20" y="215" class="text-main desc">Next Step: Automate multi-run statistical tables</text>
+    <text x="20" y="235" class="text-main desc">to prevent "Cherry Picking" accusations.</text>
+  </g>
+
+  <!-- Pillar 5: Calibration & Clinical Safety -->
+  <g transform="translate(275, 840)">
+    <rect x="0" y="0" width="450" height="240" rx="10" class="box-missing" />
+    <use xlink:href="#cross" x="15" y="15" width="24" height="24" />
+    <text x="50" y="35" class="text-main subheader tag-missing">5. Calibration &amp; Reliability (GAP)</text>
+    <text x="20" y="75" class="text-main bullet" fill="#e74c3c">• Expected Calibration Error (ECE)</text>
+    <text x="20" y="105" class="text-main bullet" fill="#e74c3c">• Reliability Diagrams (Confidence vs Accuracy)</text>
+    <text x="20" y="135" class="text-main bullet" fill="#e74c3c">• Brier Score for Probabilistic Precision</text>
+    <line x1="20" y1="160" x2="430" y2="160" stroke="#e74c3c" stroke-width="1" stroke-dasharray="4,2" />
+    <text x="20" y="185" class="text-main desc" font-weight="bold" fill="#c0392b">Priority Check: High-impact medical journals require</text>
+    <text x="20" y="205" class="text-main desc" font-weight="bold" fill="#c0392b">reliability proof. A model must not only be correct,</text>
+    <text x="20" y="225" class="text-main desc" font-weight="bold" fill="#c0392b">but also know when it is uncertain.</text>
+  </g>
+
+  <!-- Final Strategy -->
+  <g transform="translate(100, 1120)">
+    <rect x="0" y="0" width="800" height="180" rx="15" fill="#f8f9fa" stroke="#34495e" stroke-width="2" />
+    <text x="400" y="40" text-anchor="middle" class="text-main subheader" style="text-decoration: underline;">Final Q1 Submission Strategy</text>
+    <text x="40" y="80" class="text-main bullet">1. <b>Statistical Lift:</b> Move metrics from single-run to Mean ± Std across 3 random seeds.</text>
+    <text x="40" y="110" class="text-main bullet">2. <b>Trust Lift:</b> Implement ECE and Calibration curves to prove clinical safety.</text>
+    <text x="40" y="140" class="text-main bullet">3. <b>interpretability Lift:</b> Add a final Server-side XAI figure comparing baselines on the Test set.</text>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(750, 100)">
+    <use xlink:href="#check" x="0" y="0" width="16" height="16" /> <text x="20" y="13" class="text-main bullet" style="font-size:10px">Ready</text>
+    <use xlink:href="#warn" x="0" y="20" width="16" height="16" /> <text x="20" y="33" class="text-main bullet" style="font-size:10px">Needs Extension</text>
+    <use xlink:href="#cross" x="0" y="40" width="16" height="16" /> <text x="20" y="53" class="text-main bullet" style="font-size:10px">Missing</text>
+  </g>
+
+</svg>
